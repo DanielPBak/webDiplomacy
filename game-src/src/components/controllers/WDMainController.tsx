@@ -15,6 +15,7 @@ import { useAppDispatch, useAppSelector } from "../../state/hooks";
 import getPhaseKey from "../../utils/state/getPhaseKey";
 import WDGameProgressOverlay from "../ui/WDGameProgressOverlay";
 import WDAlertModal from "../ui/WDAlertModal";
+import WDJoinPanel from "../ui/WDJoinPanel";
 import { store } from "../../state/store";
 
 const WDMainController: React.FC = function ({ children }): React.ReactElement {
@@ -98,7 +99,18 @@ const WDMainController: React.FC = function ({ children }): React.ReactElement {
     document.title = `${name} - webDiplomacy`;
   }, [name, gameID]);
 
-  const showOverlay = noPhase || status.status === "Left";
+  // Someone who isn't in the game, or isn't logged in, is offered a way to join it. Before the game starts this
+  // takes the place of the "waiting to start" overlay, which is for its players.
+  const viewerNotLoggedIn = useAppSelector(
+    ({ game }) => game.viewerNotLoggedIn,
+  );
+  const isNonMember = overview.gameID > 0 && !overview.user;
+  const showJoinPanel = viewerNotLoggedIn || isNonMember;
+  const urlGameID = Number(
+    new URLSearchParams(window.location.search).get("gameID"),
+  );
+
+  const showOverlay = (noPhase && !showJoinPanel) || status.status === "Left";
   if (displayedPhaseKey === null && overview.phase) {
     setDisplayedPhaseKey(overviewKey);
   }
@@ -127,6 +139,17 @@ const WDMainController: React.FC = function ({ children }): React.ReactElement {
               );
             }
           }}
+        />
+      )}
+      {showJoinPanel && (
+        <WDJoinPanel
+          gameID={overview.gameID || urlGameID}
+          gameName={name}
+          playerTypes={overview.playerTypes}
+          notLoggedIn={viewerNotLoggedIn}
+          legacyBoardLink={`../board.php?gameID=${
+            overview.gameID || urlGameID
+          }&view=dropDown`}
         />
       )}
       <WDAlertModal />

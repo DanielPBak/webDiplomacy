@@ -27,6 +27,23 @@ require_once('header.php');
 
 // Log-offs and log-ons are handled within header; here the form is presented, and forgotten passwords recovered
 
+/*
+ * returnTo is the page to go back to once logged on, e.g. "board.php?gameID=123" from the game board's sign-in
+ * prompt. Only a page of this site, given relative to it: no scheme, host, leading slash or "..", so it can't be
+ * used to send someone elsewhere.
+ */
+$returnTo = null;
+if( isset($_REQUEST['returnTo']) && is_string($_REQUEST['returnTo'])
+	&& preg_match('/^[A-Za-z0-9_\-]+(\.php|\/)(\?[A-Za-z0-9_=&\-]*)?$/D', $_REQUEST['returnTo']) )
+	$returnTo = $_REQUEST['returnTo'];
+
+if( $User->type['User'] && !is_null($returnTo) && !isset($_REQUEST['logoff']) )
+{
+	// Logged on, by the form below or already. close() commits what logging on wrote, as the page footer would.
+	header('Location: '.$returnTo);
+	close();
+}
+
 libHTML::starthtml();
 
 if( isset($_REQUEST['forgotPassword']) and $User->type['Guest'] )
@@ -144,7 +161,7 @@ if( ! $User->type['User'] )
 	print libHTML::pageTitle(l_t('Log on'),l_t('Enter your webDiplomacy account username and password to log into your account.'));
 	print '
 		<div class = "login">
-		<form action="./index.php" method="post">
+		<form action="'.( is_null($returnTo) ? './index.php' : './logon.php?returnTo='.urlencode($returnTo) ).'" method="post">
 
 			<strong>Username</strong>
 			<input type="text" tabindex="1" maxlength=30 size=15 class="login" name="loginuser"></br></br>

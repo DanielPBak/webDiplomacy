@@ -465,7 +465,16 @@ class processMembers extends Members
 	 * @param string[optional] $password The optional password supplied to enter the game
 	 * @param string[optional] $countryID The countryID to be taken (filtered)
 	 */
-	function join($password="", $countryID=-1)
+	/**
+	 * Join the global $User to this game, pre-game or by taking over a country in civil disorder. Throws if they
+	 * can't, with a message meant for them to read.
+	 *
+	 * @param string $password The invite code, for a private game
+	 * @param int $countryID The country to take over, once the game has started
+	 * @param bool $redirect If true (board.php) the page ends here with a notice redirecting to the game. If false
+	 * 	(the game/join API route) it returns, leaving the caller to commit and then run libGameFiles::runDeferred().
+	 */
+	function join($password="", $countryID=-1, $redirect=true)
 	{
 		global $DB, $User;
 
@@ -566,7 +575,7 @@ class processMembers extends Members
 		// The redirect below ends the page, which commits; the game's public JSON files then get the new member
 		libGameFiles::refreshAfterCommit($this->Game->id, array('game', 'status'));
 
-		$this->joinedRedirect();
+		if( $redirect ) $this->joinedRedirect();
 	}
 
 	/**

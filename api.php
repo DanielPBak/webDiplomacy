@@ -771,16 +771,194 @@ class GetPlayerContext extends ApiEntry {
 }
 
 /**
- * API entry game/join
+ * What game/joininfo, game/join and game/leave have in common. board.php's join and leave forms are what these
+ * mirror, so they share its checks: the same Members::join() and Member::leave(), with the game locked for update,
+ * and for a logged-in user's browser the same one-use form ticket (libHTML::formTicket() / checkTicket()) against
+ * cross-site requests. An API key isn't sent by a browser on its own, so a bot's requests don't need a ticket.
  */
-class JoinGame extends ApiEntry {
+abstract class JoinLeaveEntry extends ApiEntry {
+	/**
+	 * Members, Member and Game check the global $User, which is only the caller when they are logged in; for an API
+	 * key it is the guest user. Make it the caller.
+	 * @return User
+	 */
+	protected function callerAsGlobalUser($userID) {
+		global $User;
+
+		if( empty($userID) )
+			throw new ClientUnauthorizedException('Not logged in.');
+
+		if( !$this->isSessionAuth || !isset($User) || intval($User->id) != intval($userID) )
+			$User = new User($userID);
+
+		if ( !$User->type['User'] )
+			throw new ClientForbiddenException("Only users can join games");
+
+		return $User;
+	}
+
+	/**
+	 * The ticket game/joininfo gave out, as board.php checks the one its form carries. It is used up whether or not
+	 * the request succeeds, so a client asks game/joininfo for another before trying again.
+	 */
+	protected function checkFormTicket() {
+		if( $this->isSessionAuth && !libHTML::checkTicket() )
+			throw new ClientForbiddenException(l_t('This form has expired, please reload the page and try again.'));
+	}
+
+	/**
+	 * The part of a join or leave which has to be undone if it fails: Members::join() can have created the member
+	 * record before it finds the user can't pay the bet. The messages are written for the user, as board.php shows
+	 * them, so anything else thrown is passed on as a 403 with its message rather than a server error.
+	 */
+	protected function runInTransaction(callable $change) {
+		global $DB;
+
+		try
+		{
+			$result = $change();
+		}
+		catch(ClientUnauthorizedException | ClientForbiddenException | RequestException $e)
+		{
+			$DB->sql_put("ROLLBACK");
+			throw $e;
+		}
+		catch(Exception $e)
+		{
+			$DB->sql_put("ROLLBACK");
+			throw new ClientForbiddenException($e->getMessage());
+		}
+
+		// board.php commits when its notice ends the page; here the route carries on to answer, so commit, and then
+		// rewrite the game's public JSON files with the new member list (libGameFiles::refreshAfterCommit())
+		$DB->sql_put("COMMIT");
+		libGameFiles::runDeferred();
+
+		return $result;
+	}
+}
+
+/**
+ * API entry game/joininfo
+ * What the board's join panel needs to show a user who isn't in a game, as gamepanel/game.php's joinBar() works
+ * out for board.php: whether they can join and if not why, the bet, whether an invite code is needed, the countries
+ * in civil disorder which can be taken over, and the form ticket game/join (or game/leave) will check.
+ * *Multiplexed
+ */
+class GetJoinInfo extends JoinLeaveEntry {
+	public function __construct() {
+		parent::__construct('game/joininfo', 'GET', '', array('gameID'), false);
+	}
+	/**
+	 * It is for those who aren't in the game yet
+	 */
+	public function requiresMembership() {
+		return false;
+	}
+	public function run($userID, $permissionIsExplicit) {
+		$User = $this->callerAsGlobalUser($userID);
+		$Game = $this->getAssociatedGame();
+		$Members = $Game->Members;
+
+		$isMember = $Members->isJoined();
+		$isPregame = ( $Game->phase == 'Pre-game' );
+
+		$info = array(
+			'gameID' => $this->gameIDToMultiplexedGameID(intval($Game->id)),
+			'phase' => $Game->phase,
+			'isMember' => $isMember,
+			'canJoin' => false,
+			'canLeave' => false,
+			// Why they can't join (or, as a member, leave), for showing to them; null if they can
+			'reason' => null,
+			'private' => (bool)$Game->private,
+			'minimumBet' => is_null($Game->minimumBet) ? null : intval($Game->minimumBet),
+			'userPoints' => intval($User->points),
+			'minimumReliabilityRating' => intval($Game->minimumReliabilityRating),
+			'userReliabilityRating' => intval($User->reliabilityRating),
+			'isLiveGame' => (bool)$Game->isLiveGame(),
+			'countryCount' => count($Game->Variant->countries),
+			'memberCount' => count($Members->ByID),
+			// The countries in civil disorder, once the game has started, as Members::selectCivilDisorder() lists them
+			'takeover' => array(),
+			'formTicket' => null,
+		);
+
+		if( $isMember )
+		{
+			$reason = $Members->cantLeaveReason();
+			if( !$reason )
+				$info['canLeave'] = true;
+			elseif( $isPregame )
+				$info['reason'] = l_t("Can't leave game; %s.", $reason);
+		}
+		else
+		{
+			if( !$isPregame && $Game->phase != 'Finished' )
+			{
+				foreach($Members->ByStatus['Left'] as $Member)
+				{
+					$bet = intval($Member->pointsValueInTakeover());
+					$info['takeover'][] = array(
+						'countryID' => intval($Member->countryID),
+						'country' => $Member->country,
+						'bet' => $bet,
+						'affordable' => ( $User->points >= $bet ),
+					);
+				}
+			}
+
+			if( !is_null($Game->sandboxCreatedByUserID) )
+				$info['reason'] = l_t('This is a sandbox game, which can\'t be joined.');
+			elseif( $Game->phase == 'Finished' )
+				$info['reason'] = l_t('This game has finished.');
+			elseif( array_key_exists($User->id, $Game->civilDisorderInfo) )
+				$info['reason'] = l_t('You left this game in civil disorder, so you can\'t join it again.');
+			elseif( $isPregame && count($Members->ByID) >= count($Game->Variant->countries) )
+				$info['reason'] = l_t('This game is full.');
+			elseif( !$isPregame && count($info['takeover']) == 0 )
+				$info['reason'] = l_t('No country is in civil disorder, so there is no place in this game to take over.');
+			elseif( $User->userIsTempBanned() )
+				$info['reason'] = l_t('Due to a temporary ban you cannot join games.');
+			elseif( $User->reliabilityRating < $Game->minimumReliabilityRating )
+				$info['reason'] = l_t('You are not reliable enough to join this game: it needs a reliability rating of %s%%, and yours is %s%%.',
+					$Game->minimumReliabilityRating, $User->reliabilityRating);
+			elseif( !$Game->isJoinable() )
+				$info['reason'] = is_null($Game->minimumBet) ? l_t('You cannot join this game.') :
+					l_t('You have too few points to join this game: it needs %s, and you have %s.',
+						l_t('%s points', $Game->minimumBet), l_t('%s points', $User->points));
+			else
+				$info['canJoin'] = true;
+		}
+
+		// A ticket for the form the panel shows, as joinBar() puts one in board.php's
+		if( $this->isSessionAuth && ( $info['canJoin'] || $info['canLeave'] ) )
+			$info['formTicket'] = libHTML::formTicket();
+
+		return $this->JSONResponse('Join info.', 'GGD-JOININFO', true, $info);
+	}
+}
+
+/**
+ * API entry game/join
+ * board.php's join form: gamepass is the invite code for a private game, and countryID the country in civil disorder
+ * to take over once a game has started. A logged-in user's browser also sends the formTicket game/joininfo gave it.
+ * If they can't join, a 403 (or 400) whose text says why, e.g. a wrong invite code or too few points.
+ */
+class JoinGame extends JoinLeaveEntry {
 	public function __construct() {
 		parent::__construct(
 			'game/join',
 			'POST',
 			'',
-			array('gameID'),
+			array('gameID', 'gamepass', 'countryID', 'formTicket'),
 			true);
+	}
+	/**
+	 * It is for those who aren't in the game yet
+	 */
+	public function requiresMembership() {
+		return false;
 	}
 	/**
 	 * @throws Exception
@@ -788,9 +966,10 @@ class JoinGame extends ApiEntry {
 	 * @throws ClientForbiddenException
 	 */
 	public function run($userID, $permissionIsExplicit) {
-		$User = new User($userID);
+		global $Redis;
 
-		if ( !$User->type['User'] ) throw new ClientForbiddenException("Only users can join games");
+		$User = $this->callerAsGlobalUser($userID);
+		$this->checkFormTicket();
 
 		$args = $this->getArgs();
 		$gameID = (int)$args['gameID'];
@@ -806,28 +985,44 @@ class JoinGame extends ApiEntry {
 			throw new ClientForbiddenException('Bots cannot play this variant.');
 
 		libVariant::setGlobals($Variant);
-		$Game = $Variant->processGame($gameID);
-		
-		// They will be stopped here if they're not allowed.
-		$Game->Members->join(
-			( isset($args['gamepass']) && $args['gamepass'] ?? null ),
-			( isset($args['countryID']) && $args['countryID'] ?? null )
-		 );
-		
-		return $this->JSONResponse('Successfully joined.', 'GGD-JOIN', true);
+
+		$countryID = $this->runInTransaction(function() use ($Variant, $gameID, $args, $User) {
+			// Locked for update, as board.php does, so it won't change while they join
+			$Game = $Variant->processGame($gameID);
+
+			// They will be stopped here if they're not allowed.
+			$Game->Members->join(
+				(string)( $args['gamepass'] ?? '' ),
+				( $args['countryID'] ?? null ),
+				false
+			);
+
+			return intval($Game->Members->ByUserID[$User->id]->countryID);
+		});
+
+		// Anyone watching the game sees the new player
+		$Redis->trigger("private-game" . $gameID, 'overview', 'join');
+
+		return $this->JSONResponse(l_t('You have joined! Good luck'), 'GGD-JOIN', true, array(
+			'gameID' => $this->gameIDToMultiplexedGameID($gameID),
+			// 0 until a game which hasn't started has had countries assigned
+			'countryID' => $countryID,
+		));
 	}
 }
 
 /**
  * API entry game/leave
+ * board.php's leave form, for a game which hasn't started. A logged-in user's browser also sends the formTicket
+ * game/joininfo gave it.
  */
-class LeaveGame extends ApiEntry {
+class LeaveGame extends JoinLeaveEntry {
 	public function __construct() {
 		parent::__construct(
 			'game/leave',
 			'POST',
 			'',
-			array('gameID'),
+			array('gameID', 'formTicket'),
 			true);
 	}
 	/**
@@ -836,9 +1031,10 @@ class LeaveGame extends ApiEntry {
 	 * @throws ClientForbiddenException
 	 */
 	public function run($userID, $permissionIsExplicit) {
-		$User = new User($userID);
+		global $Redis;
 
-		if ( !$User->type['User'] ) throw new ClientForbiddenException("Only users can join games");
+		$User = $this->callerAsGlobalUser($userID);
+		$this->checkFormTicket();
 
 		$args = $this->getArgs();
 		$gameID = (int)$args['gameID'];
@@ -847,16 +1043,20 @@ class LeaveGame extends ApiEntry {
 		
 		$Variant=libVariant::loadFromGameID($gameID);
 		libVariant::setGlobals($Variant);
-		$Game = $Variant->processGame($gameID);
-		
-		$reason=$Game->Members->cantLeaveReason();
 
-		if($reason)
-			throw new RequestException(l_t("Can't leave game; %s.",$reason));
-		else
-			$Game->Members->ByUserID[$User->id]->leave();
+		$message = $this->runInTransaction(function() use ($Variant, $gameID, $User) {
+			$Game = $Variant->processGame($gameID);
 
-		return $this->JSONResponse('Successfully left game.', 'GGD-LEAVE', true);
+			$reason=$Game->Members->cantLeaveReason();
+			if($reason)
+				throw new RequestException(l_t("Can't leave game; %s.",$reason));
+
+			return $Game->Members->ByUserID[$User->id]->leave(false);
+		});
+
+		$Redis->trigger("private-game" . $gameID, 'overview', 'leave');
+
+		return $this->JSONResponse(strip_tags($message), 'GGD-LEAVE', true);
 	}
 }
 
@@ -1728,6 +1928,7 @@ try {
 
 	$api->load(new GetPlayerContext());
 	
+	$api->load(new GetJoinInfo());
 	$api->load(new JoinGame());
 	$api->load(new LeaveGame());
 	

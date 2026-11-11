@@ -227,6 +227,9 @@ interface MessagesFile {
 
 /* Loading */
 
+// The message the overview's load fails with when the viewer isn't logged in
+export const NOT_LOGGED_IN = "Not logged in";
+
 // The site root, which the URLs of the files are relative to; this board is served from a folder within it
 const siteRoot = "../";
 
@@ -299,10 +302,18 @@ async function requestContext(
   const token = sbToken();
   if (token) query.set("sbToken", token);
   const started = performance.now();
-  const { data } = await http.get(
-    `${siteRoot}api.php?route=game/playercontext&${query.toString()}`,
-    { timeout: 60000 },
-  );
+  let data;
+  try {
+    ({ data } = await http.get(
+      `${siteRoot}api.php?route=game/playercontext&${query.toString()}`,
+      { timeout: 60000 },
+    ));
+  } catch (error) {
+    // A logged-out visitor, who the board asks to sign in (WDJoinPanel)
+    if (axios.isAxiosError(error) && error.response?.status === 401)
+      throw new Error(NOT_LOGGED_IN);
+    throw error;
+  }
   reportClientMetric("BOARD_CONTEXT", performance.now() - started);
   const newContext = data as PlayerContext;
   fileURLs = newContext.files;

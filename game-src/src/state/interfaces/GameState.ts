@@ -39,4 +39,5 @@ export interface GameState {
   alert: GameAlert;
   activeGames: PlayerActiveGames;
   numConsecutiveGetFailures: number; // How many consecutive GET API requests to the server were failures.
+  viewerNotLoggedIn: boolean; // The game couldn't be loaded because the viewer isn't logged in
 }

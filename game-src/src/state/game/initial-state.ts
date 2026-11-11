@@ -176,6 +176,7 @@ const initialState: GameState = {
   },
   activeGames: [],
   numConsecutiveGetFailures: 0,
+  viewerNotLoggedIn: false,
 };
 
 export default initialState;

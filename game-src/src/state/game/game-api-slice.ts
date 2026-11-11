@@ -12,6 +12,7 @@ import {
   loadMessages,
   loadOverview,
   loadStatus,
+  NOT_LOGGED_IN,
 } from "../../utils/api/gameSource";
 import GameDataResponse from "../interfaces/GameDataResponse";
 import GameErrorResponse from "../interfaces/GameErrorResponse";
@@ -360,6 +361,11 @@ const gameApiSlice = createSlice({
       .addCase(fetchGameOverview.fulfilled, fetchGameOverviewFulfilled)
       .addCase(fetchGameOverview.rejected, (state, action) => {
         state.outstandingOverviewRequests = false;
+        if (action.error.message === NOT_LOGGED_IN) {
+          // Not a network problem, so no "Cannot connect" alert: the board asks them to sign in
+          state.viewerNotLoggedIn = true;
+          return;
+        }
         handleGetFailed(state, action);
       })
       // fetchGameStatus

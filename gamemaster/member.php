@@ -36,8 +36,12 @@ class processMember extends Member
 	/**
 	 * Leave the game before it has started, refunding points, deleting the member record,
 	 * and possibly erasing the game.
+	 *
+	 * @param bool $redirect If true (board.php) the page ends here with a notice redirecting home. If false (the
+	 * 	game/leave API route) it returns the message, leaving the caller to commit and run libGameFiles::runDeferred().
+	 * @return string The message telling them they've left, when $redirect is false
 	 */
-	function leave()
+	function leave($redirect=true)
 	{
 		global $DB, $User;
 
@@ -77,8 +81,11 @@ class processMember extends Member
 		// the game was erased, are removed)
 		libGameFiles::refreshAfterCommit($this->gameID, array('game', 'status'));
 
-		header('refresh: 4; url=index.php');
 		$this->send('No','No', $leftMessage);
+
+		if( !$redirect ) return $leftMessage;
+
+		header('refresh: 4; url=index.php');
 		libHTML::notice('Left game', $leftMessage);
 	}
 
