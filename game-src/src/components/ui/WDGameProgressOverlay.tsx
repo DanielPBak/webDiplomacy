@@ -5,6 +5,7 @@ import GameOverviewResponse from "../../state/interfaces/GameOverviewResponse";
 import GameStatusResponse from "../../state/interfaces/GameStatusResponse";
 import ViewedPhaseState from "../../state/interfaces/ViewedPhaseState";
 import { formatPSYForDisplay } from "../../utils/formatPhaseForDisplay";
+import WDLeaveGameButton from "./WDLeaveGameButton";
 import {
   getGamePhaseSeasonYear,
   getHistoricalPhaseSeasonYear,
@@ -101,9 +102,12 @@ const WDGameProgressOverlay: React.FC<WDGameProgressOverlayProps> = function ({
     }
   } else if (overview.phase === "Pre-game") {
     innerElem = (
-      <div>
-        <b>Pre-game:</b> Game is waiting to start
-      </div>
+      <Stack direction="column" alignItems="center">
+        <div>
+          <b>Pre-game:</b> Game is waiting to start
+        </div>
+        {overview.user && <WDLeaveGameButton gameID={overview.gameID} />}
+      </Stack>
     );
   } else if (overview.phase === "Error") {
     innerElem = <div>Could not load game. You may need to join this game.</div>;

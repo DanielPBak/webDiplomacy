@@ -77,3 +77,20 @@ export async function joinGame(
   });
   return data.msg as string;
 }
+
+/**
+ * Leave a game which hasn't started, getting the bet back. Rejects with the reason if they can't, e.g. it is
+ * about to start.
+ */
+export async function leaveGame(
+  gameID: number,
+  formTicket: number | null,
+): Promise<string> {
+  const form = new URLSearchParams();
+  form.set("gameID", String(gameID));
+  if (formTicket !== null) form.set("formTicket", String(formTicket));
+  const { data } = await axios.post(apiURL(ApiRoute.GAME_LEAVE), form, {
+    timeout: 30000,
+  });
+  return data.msg as string;
+}
